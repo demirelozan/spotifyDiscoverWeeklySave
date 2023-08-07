@@ -1,16 +1,105 @@
-# This is a sample Python script.
+# import necessary modules
+import spotipy
+import time
+from spotipy.oauth2 import SpotifyOAuth
+from flask import Flask, request, url_for, session, redirect
 
-# Press Shift+F10 to execute it or replace it with your code.
-# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
+app = Flask(__name__)
+
+# set the name of the session cookie
+app.config['SESSION_COOKIE_NAME'] = 'Spotify Cookie'
+
+# set a random secret key to sign cookie
+app.secret_key = 'YOUR_SECRET_KEY'
+
+TOKEN_INFO = 'token_info'
 
 
-def print_hi(name):
-    # Use a breakpoint in the code line below to debug your script.
-    print(f'Hi, {name}')  # Press Ctrl+F8 to toggle the breakpoint.
+# route to handle logging in
+@app.route('/')
+def login():
+    # create a SpotifyOAuth instance and get the authorization URL
+    auth_url = create_spotify_oauth().get_authorize_url()
+    # redirect the user to the authorization URL
+    return redirect(auth_url)
 
 
-# Press the green button in the gutter to run the script.
-if __name__ == '__main__':
-    print_hi('PyCharm')
+# route to handle the redirect URI after authorization
+@app.route('/redirect')
+def redirect_page():
+    session.clear()
+    # get the authorization code from the request parameters
+    code = request.args.get('code')
+    # exchange the authorization code for an access token and refresh token
+    token_info = create_spotify_oauth().get_access_token(code)
+    # save the token info in the session
+    session[TOKEN_INFO] = token_info
+    # redirect the user to the save_discover_weekly route
+    return redirect(url_for('save_discover_weekly', _external=True))
 
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+
+@app.route('/saveDiscoverWeekly')
+def save_discover_weekly():
+    try:
+        token_info = get_token()
+    except:
+        print('User not logged in')
+        return redirect("/")
+
+    sp = spotipy.Spotify(auth=token_info['access_token'])
+    user_id = sp.current_user()['id']
+
+    current_playlists = sp.current_user_playlists()['items']
+    discover_weekly_playlist_id = None
+    saved_weekly_playlist_id = None
+
+    # find the Discover Weekly and Saved Weekly playlists
+    for playlist in current_playlists:
+        if (playlist['name'] == 'Discover Weekly'):
+            discover_weekly_playlist_id = playlist['id']
+        if (playlist['name'] == 'Saved Weekly'):
+            saved_weekly_playlist_id = playlist['id']
+
+    # if the Discover Weekly playlist is not found, return an error message
+    if not discover_weekly_playlist_id:
+        return 'Discover Weekly not found'
+
+    if not saved_weekly_playlist_id:
+        new_playlist = sp.user_playlist_create(user_id, 'Saved Weekly', True)
+        saved_weekly_playlist_id = new_playlist['id']
+
+    # get the tracks from the Discover Weekly Playlist
+    discover_weekly_playlist = sp.playlist_items(discover_weekly_playlist_id)
+    song_uris = []
+    for song in discover_weekly_playlist['items']:
+        song_uri = song['track']['uri']
+        song_uris.append(song_uri)
+
+    # add the tracks to the Saved Weekly Playlist
+    sp.user_playlist_add_tracks("YOUR_USER_ID", saved_weekly_playlist_id, song_uris, None)
+    return " Tracks Added Successfully"
+
+
+def get_token():
+    token_info = session.get(TOKEN_INFO, None)
+    if not token_info:
+        redirect(url_for('login', _external=False))
+
+    now = int(time.time())
+
+    is_expired = token_info['expires_at'] - now < 60
+    if is_expired:
+        spotify_oauth = create_spotify_oauth()
+        token_info = spotify_oauth.refresh_access_token(token_info['refresh_token'])
+    return token_info
+
+
+def create_spotify_oauth():
+    return SpotifyOAuth(client_id='YOUR_CLIENT_ID',
+                        client_secret='CLIENT_SECRET',
+                        redirect_uri=url_for('redirect_page', _external=True),
+                        scope='user-library-read playlist-modify-public playlist-modify-private'
+                        )
+
+
+app.run(debug=True)
